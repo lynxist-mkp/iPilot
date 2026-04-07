@@ -1,26 +1,33 @@
+
+
 from ipilot.agent.context import ContextBuilder
 from ipilot.agent.hook import AgentHook
 from ipilot.agent.tools.registry import ToolRegistry
+from ipilot.agent.types import AgentRunResult
 from ipilot.providers.base import LLMProvider, LLMResponse
 from ipilot.session.manager import SessionManager
 
 
 class AgentLoop:
-    def __init__(
-        self,
-        provider: LLMProvider,
-        workspace,
-        session_manager: SessionManager,
-        tool_registry: ToolRegistry,
-        context_builder: ContextBuilder,
-        hooks: list[AgentHook] | None = None,
-    ) -> None:
-        self.provider = provider
-        self.workspace = workspace
-        self.session = session_manager
-        self.tools = tool_registry
-        self.context = context_builder
-        self.hooks = hooks or []
+    # def __init__(
+    #     self,
+    #     provider: LLMProvider,
+    #     workspace,
+    #     session_manager: SessionManager,
+    #     tool_registry: ToolRegistry,
+    #     context_builder: ContextBuilder,
+    #     hooks: list[AgentHook] | None = None,
+    # ) -> None:
+    #     self.provider = provider
+    #     self.workspace = workspace
+    #     self.session = session_manager
+    #     self.tools = tool_registry
+    #     self.context = context_builder
+    #     self.hooks = hooks or []
+
+    def __init__(self, graph, context_factory) -> None:
+        self.graph = graph
+        self.context_factory = context_factory
 
     async def _run_before_hooks(self, message: str, session_key: str) -> None:
         for hook in self.hooks:
@@ -75,6 +82,27 @@ class AgentLoop:
         session.messages.append({"role": "assistant", "content": response.content})
         self.session.save(session)
 
+    # async def process_direct(
+    #     self,
+    #     message: str,
+    #     session_key: str,
+    #     channel: str | None = None,
+    #     chat_id: str | None = None,
+    # ) -> LLMResponse:
+    #     await self._run_before_hooks(message, session_key)
+    #     session = self.session.get_or_create(session_key)
+    #     history = session.messages
+
+    #     messages = self.context.build_messages(history, message, channel=channel, chat_id=chat_id)
+    #     response = await self.provider.chat(
+    #         messages=messages,
+    #         tools=self.tools.get_definitions(),
+    #     )
+    #     response = await self._execute_tool_round(messages, response)
+    #     self._save_turn(session_key, message, response)
+    #     await self._run_after_hooks(message, response, session_key)
+    #     return response
+
     async def process_direct(
         self,
         message: str,
@@ -82,19 +110,19 @@ class AgentLoop:
         channel: str | None = None,
         chat_id: str | None = None,
     ) -> LLMResponse:
-        await self._run_before_hooks(message, session_key)
-        session = self.session.get_or_create(session_key)
-        history = session.messages
-
-        messages = self.context.build_messages(history, message, channel=channel, chat_id=chat_id)
-        response = await self.provider.chat(
-            messages=messages,
-            tools=self.tools.get_definitions(),
+        context = self.context_factory(session_key=session_key, channel=channel, chat_id=chat_id)
+        result = await self.graph.ainvoke(
+            {"messages": [{"role": "user", "content": message}]},
+            config={"configurable": {"thread_id": session_key}},
+            context=context,
         )
-        response = await self._execute_tool_round(messages, response)
-        self._save_turn(session_key, message, response)
-        await self._run_after_hooks(message, response, session_key)
-        return response
+        messages = result["messages"]
+        last = messages[-1]
+        return AgentRunResult(
+            content=getattr(last, "content", None),
+            messages=messages,
+            finish_reason="stop",
+        )
 
     async def process_direct_stream(
         self,

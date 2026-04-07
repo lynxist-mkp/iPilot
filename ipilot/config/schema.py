@@ -5,6 +5,7 @@ class AgentDefaults(BaseModel):
     workspace: str = "~/.ipilot/workspace"
     model: str = "step-3.5-flash"
     provider: str = "stepfun"
+    temperature: float = 0.0
 
 class AgentsConfig(BaseModel):
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
