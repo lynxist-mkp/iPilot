@@ -153,6 +153,20 @@ async def _run_manager(manager: ChannelManager):
 @channel_app.command("twitch")
 def channel_twitch():
     config = load_config()
+    twitch = config.channels.twitch
+    if not twitch.enabled:
+        typer.echo("Twitch channel is not enabled in config.")
+        raise typer.Exit(code=1)
+
+    missing = [
+        field_name
+        for field_name in ("client_id", "access_token", "broadcaster_id", "sender_id")
+        if not getattr(twitch, field_name)
+    ]
+    if missing:
+        typer.echo(f"Twitch channel config is missing: {', '.join(missing)}")
+        raise typer.Exit(code=1)
+
     bot = build_ipilot(config)
     manager = build_channel_manager({"twitch": build_twitch_channel(config, bot)})
     asyncio.run(_run_manager(manager))

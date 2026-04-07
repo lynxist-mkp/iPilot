@@ -18,6 +18,21 @@
 - `ipilot/agent/loop.py`
 - `ipilot/runtime.py`
 
+## 0. 先认清当前状态
+
+你现在不是从零开始，而是在一份“已经半迁移”的代码上继续往前推。
+
+当前最关键的现实是：
+
+- `runtime.py` 已经开始走 `build_agent_loop(...)`
+- `loop.py` 已经能拿到 `graph`，但还残留旧链路方法
+- `graph_runtime.py` 已经有 `StateGraph` 骨架，但还没把高级能力全接完
+
+所以这一章不要追求“把所有旧文件一次删光”，而是先做两件事：
+
+1. 让主入口稳定跑在 graph 上
+2. 把旧链路从主路径里挪出去
+
 ## 1. 先明确“新 loop 不该再做什么”
 
 当前 `AgentLoop` 做了太多事情：
@@ -34,6 +49,24 @@
 
 1. 把外部调用转换成 graph invoke / stream 调用
 2. 把 graph 输出整理成 `AgentRunResult`
+
+这一章里最关键的判断标准很简单：
+
+- 如果你还在 `AgentLoop` 里拼接 tool call 消息，说明还没迁完
+- 如果你还在 `AgentLoop` 里自己保存 session，说明还没迁完
+- 如果你还在 `AgentLoop` 里 while-loop 执行工具，说明还没迁完
+
+主循环迁移完成后，`loop.py` 应该像适配器，不像业务实现。
+
+### 1.1 你现在改 `loop.py` 的顺序
+
+如果你是边看边改，建议按这个顺序来：
+
+1. 先把 `process_direct(...)` 调通
+2. 再把 `process_direct_stream(...)` 改成兼容版
+3. 最后再考虑删掉旧的 `_execute_tool_round(...)`、`_save_turn(...)`、`SessionManager` 相关路径
+
+不要一上来就同时改流式、工具循环、会话持久化，那样最容易改乱。
 
 ## 2. 先写 graph builder
 
@@ -70,6 +103,19 @@ def build_agent_graph(*, model, tools, middleware, sqlite_path):
 - 工具执行交给 `ToolNode`
 - 持久化交给 SQLite checkpointer
 
+### 2.1 `middleware` 这版先怎么处理
+
+如果你已经在第 4 章用过 `create_agent(...)`，会自然想到 middleware。
+
+但这一章是“先把主链切过去”，不是“同时把所有横切逻辑都整理完”。所以第一版最稳的做法是：
+
+1. 先保留 `middleware` 参数，作为未来扩展位
+2. 先不要把 prompt 注入和 graph 节点编排一起做
+
+等 `AgentLoop` 和 checkpointer 跑顺以后，再考虑把 system prompt 进一步抽成 graph 前置节点。
+
+也就是说，这一版的教程里，`middleware` 先是“保留接口”，不是“必须已经接通的功能”。
+
 ## 3. 为什么现在可以退休 `_execute_tool_round(...)`
 
 因为 `ToolNode + tools_condition + graph edge` 已经把这个循环表达出来了。
@@ -97,7 +143,13 @@ class AgentLoop:
         self.graph = graph
         self.context_factory = context_factory
 
-    async def process_direct(self, message: str, session_key: str, channel: str | None = None, chat_id: str | None = None):
+    async def process_direct(
+        self,
+        message: str,
+        session_key: str,
+        channel: str | None = None,
+        chat_id: str | None = None,
+    ):
         context = self.context_factory(session_key=session_key, channel=channel, chat_id=chat_id)
         result = await self.graph.ainvoke(
             {"messages": [{"role": "user", "content": message}]},
@@ -111,6 +163,28 @@ class AgentLoop:
             messages=messages,
             finish_reason="stop",
         )
+
+    async def process_direct_stream(
+        self,
+        message: str,
+        session_key: str,
+        on_stream=None,
+        channel: str | None = None,
+        chat_id: str | None = None,
+    ):
+        result = await self.process_direct(
+            message,
+            session_key,
+            channel=channel,
+            chat_id=chat_id,
+        )
+
+        if on_stream is not None and result.content:
+            maybe = on_stream(result.content)
+            if hasattr(maybe, "__await__"):
+                await maybe
+
+        return result
 ```
 
 这段代码后面还会继续打磨，但三个结构性变化已经定了：
@@ -118,6 +192,14 @@ class AgentLoop:
 - `SessionManager` 不再是主存储
 - `ContextBuilder` 不再负责消息拼接
 - `AgentLoop` 不再自己执行工具循环
+
+第一轮迁移里，这个 `process_direct_stream(...)` 允许先是“兼容版”，也就是：
+
+- 先保证 CLI 的 `--stream` 不炸
+- 先保证外层仍然能拿到 `.content`
+- 真正的 token 级流式输出，放到后续再细化
+
+如果你现在只想把教程里的“最小闭环”敲通，`process_direct_stream(...)` 就先别追求真 `astream(...)`。先确保它不破坏外层行为，再慢慢升级成真正的流式实现。
 
 ## 5. `runtime.py` 最终装配形态
 
@@ -143,7 +225,33 @@ def build_runtime_context_factory(config: Config):
             model=config.agents.defaults.model,
         )
     return factory
+
+
+def build_agent_loop(config: Config) -> AgentLoop:
+    model = build_chat_model(config)
+    tools = build_langchain_tools(config.workspace_path)
+    graph = build_agent_graph(
+        model=model,
+        tools=tools,
+        middleware=[build_system_prompt],
+        sqlite_path=str(config.workspace_path / "checkpoints.sqlite3"),
+    )
+    context_factory = build_runtime_context_factory(config)
+    return AgentLoop(graph=graph, context_factory=context_factory)
 ```
+
+这一段最好按这个顺序敲：
+
+1. 先把 `build_runtime_context_factory(...)` 写出来
+2. 再写 `build_agent_loop(...)`
+3. 再让 `iPilot.from_config()` 继续调用 `build_agent_loop(...)`
+4. 最后跑测试确认 `run(...)` 还在
+
+如果你卡住，先确认一个原则：
+
+- `build_agent_loop(...)` 是主装配入口
+- `build_experiment_agent(...)` 只是试验入口
+- `build_tool_registry(...)` 和旧 provider 链路不要再被主入口调用
 
 ## 6. `MessagesState` 为什么够用
 
@@ -160,6 +268,17 @@ def build_runtime_context_factory(config: Config):
 - 主状态：`MessagesState`
 - 额外 metadata：放 runtime context，而不是塞进 graph state
 
+如果以后你想扩状态，比如审批标记、重试计数、外部任务 id，再考虑自定义 state。第一版别提前上复杂度。
+
+### 6.1 这章和第 7 章怎么分工
+
+第 5 章只负责把“普通消息流”跑顺。
+
+- 第 5 章解决：消息进来，图跑起来，工具能用，结果能出来
+- 第 7 章解决：图跑到一半要停、要等人确认、要 resume
+
+不要在第 5 章里硬塞 `interrupt` 语义。那会把两章的边界搅乱。
+
 ## 7. streaming 怎么理解
 
 当前仓库的 streaming 是 provider 层自己发 delta。
@@ -173,6 +292,19 @@ def build_runtime_context_factory(config: Config):
 
 - `process_direct(...)` -> `graph.ainvoke(...)`
 - `process_direct_stream(...)` -> `graph.astream(...)`
+
+如果你这一轮还没把真正的 `astream` 打通，就先保留兼容版 `process_direct_stream(...)`，等主链稳定后再替换成更细的增量事件。
+
+### 7.1 当前代码和教程的对应关系
+
+如果你现在打开 `graph_runtime.py`，会发现 `confirm_dangerous_action(...)` 还只是一个示意函数。
+
+这不是 bug，而是说明：
+
+- 第 5 章里的图骨架已经可以先跑
+- 第 7 章的审批流程还要单独接线
+
+所以不要把 `confirm_dangerous_action(...)` 当成已经可用的功能；它还只是高级篇里的示例。
 
 ## 8. 本章常见坑
 
@@ -196,6 +328,7 @@ def build_runtime_context_factory(config: Config):
 
 1. 用同一个 `session_key` 调两次 `process_direct(...)`
 2. 第二次运行时能看到第一轮消息已经在图状态里
+3. 返回值仍然能从 `.content` 直接读取最终结果
 
 再跑回归：
 
@@ -208,3 +341,4 @@ uv run pytest -q tests/test_agent_loop.py
 - `AgentLoop` 已变成 graph facade
 - 工具循环不再手写
 - 会话状态主来源变成 LangGraph checkpointer
+- 外层调用不需要知道图内部细节

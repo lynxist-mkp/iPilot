@@ -46,6 +46,8 @@ class iPilot:
 
 这层你最多只需要调整返回对象从旧 `LLMResponse` 变成新 `AgentRunResult`。
 
+换句话说，`core.py` 这一层的职责不是“理解 LangGraph”，而是“把 graph 结果包装成外部稳定接口”。
+
 ## 2. CLI 不要感知内部重构
 
 `ipilot/cli/commands.py` 应该尽量不用知道：
@@ -59,6 +61,10 @@ CLI 只应该知道：
 - 拿一个 bot
 - 调 `run(...)` 或 `run_stream(...)`
 - 打印 `.content`
+
+你可以把 CLI 的判断标准记成一句话：
+
+- 只要 CLI 代码里出现 `StateGraph`、`ToolNode`、`thread_id`，说明边界已经渗透到外层了
 
 如果你发现 CLI 需要知道内部 graph 细节，说明封装层做坏了。
 
@@ -80,6 +86,22 @@ response = await bot.run(
 ```
 
 这一步的核心不是“API 更先进”，而是“新主链已经不影响外部调用方式”。
+
+### 3.1 API 层保持的最小契约
+
+这一轮迁移里，API 层最好只保留三个契约：
+
+1. 请求仍然接受 `messages`
+2. 响应仍然返回 OpenAI 风格的 `choices[0].message.content`
+3. API 层只读取最后一条 user message
+
+先不要在这里引入：
+
+- 多轮裁剪
+- 工具调用透传
+- interrupt 专用响应体
+
+这些都可以放到后续章节，再按需求扩。
 
 ## 4. heartbeat 和 Twitch 为什么要现在一起接
 
@@ -112,6 +134,8 @@ response = await self.bot_runner.run(
 )
 ```
 
+如果你在这一步发现入口层还在自己维护 session 文件或状态对象，说明第 5 章还没真正收口。
+
 ## 5. 这里最值得补的回归测试
 
 这章最关键的不是新功能测试，而是旧入口不回归。
@@ -120,6 +144,15 @@ response = await self.bot_runner.run(
 
 ```bash
 uv run pytest -q tests/test_cli_commands.py tests/test_api_server.py tests/test_twitch_channel.py tests/test_cron_and_heartbeat.py
+```
+
+建议额外补一个最小 facade smoke test，专门确认 `iPilot.run(...)` 还能拿到 `.content`：
+
+```python
+async def test_ipilot_run_returns_content(tmp_path):
+    bot = iPilot.from_config()
+    result = await bot.run("say hi", session_key="sdk:default", channel="sdk", chat_id="default")
+    assert result.content is not None
 ```
 
 如果这些过不了，就别急着做第 7 章。
@@ -153,6 +186,14 @@ uv run ipilot agent -m "Reply with exactly: hello"
 ```bash
 uv run uvicorn ipilot.api.server:app --reload --port 8900
 curl http://127.0.0.1:8900/health
+```
+
+你也可以顺手请求一次聊天接口，确认响应仍然是 OpenAI 风格：
+
+```bash
+curl -X POST http://127.0.0.1:8900/v1/chat/completions ^
+  -H "Content-Type: application/json" ^
+  -d "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}"
 ```
 
 通过标准：

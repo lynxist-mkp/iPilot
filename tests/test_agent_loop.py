@@ -1,63 +1,40 @@
 from __future__ import annotations
 
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from ipilot.agent.context import ContextBuilder
-from ipilot.agent.hook import AgentHook
 from ipilot.agent.loop import AgentLoop
-from ipilot.agent.tools.registry import ToolRegistry
-from ipilot.providers.base import LLMResponse
-from ipilot.session.manager import SessionManager
+from ipilot.agent.types import AgentRunResult
 
 
-class RecordingHook(AgentHook):
+class RecordingGraph:
     def __init__(self):
-        self.events: list[tuple[str, dict]] = []
+        self.calls: list[dict] = []
 
-    async def before_iteration(self, context):
-        self.events.append(("before", context))
-
-    async def after_iteration(self, context):
-        self.events.append(("after", context))
-
-
-class RecordingProvider:
-    def __init__(self, *, chat_response: LLMResponse | None = None, stream_response: LLMResponse | None = None):
-        self.chat_response = chat_response or LLMResponse(content="ok")
-        self.stream_response = stream_response or LLMResponse(content="streamed")
-        self.last_messages = None
-        self.stream_messages = None
-
-    async def chat(self, messages, tools=None, model=None):
-        self.last_messages = messages
-        return self.chat_response
-
-    async def chat_stream(self, messages, tools=None, model=None, on_delta=None):
-        self.stream_messages = messages
-        if on_delta:
-            await maybe_call(on_delta, "part-1")
-            await maybe_call(on_delta, "part-2")
-        return self.stream_response
+    async def ainvoke(self, payload, config=None, context=None):
+        self.calls.append(
+            {
+                "payload": payload,
+                "config": config,
+                "context": context,
+            }
+        )
+        return {"messages": [SimpleNamespace(content="done")]}
 
 
-async def maybe_call(callback, value):
-    result = callback(value)
-    if hasattr(result, "__await__"):
-        await result
+def context_factory(*, session_key: str, channel: str | None, chat_id: str | None):
+    return {
+        "session_key": session_key,
+        "channel": channel,
+        "chat_id": chat_id,
+    }
 
 
 @pytest.mark.asyncio
-async def test_process_direct_passes_runtime_context_and_saves_session(tmp_path):
-    provider = RecordingProvider(chat_response=LLMResponse(content="done"))
-    loop = AgentLoop(
-        provider=provider,
-        workspace=tmp_path,
-        session_manager=SessionManager(tmp_path),
-        tool_registry=ToolRegistry(),
-        context_builder=ContextBuilder(tmp_path),
-    )
+async def test_process_direct_uses_graph_and_context_factory():
+    graph = RecordingGraph()
+    loop = AgentLoop(graph=graph, context_factory=context_factory)
 
     response = await loop.process_direct(
         "hello",
@@ -66,25 +43,27 @@ async def test_process_direct_passes_runtime_context_and_saves_session(tmp_path)
         chat_id="default",
     )
 
+    assert isinstance(response, AgentRunResult)
     assert response.content == "done"
-    assert provider.last_messages[-1]["content"] == "[Runtime Context]\nChannel: cli\nChat ID: default\n\nhello"
-    session_file = tmp_path / "sessions" / "cli_default.jsonl"
-    assert session_file.exists()
-    assert '"content": "done"' in session_file.read_text(encoding="utf-8")
+    assert response.finish_reason == "stop"
+    assert response.messages[-1].content == "done"
+    assert graph.calls == [
+        {
+            "payload": {"messages": [{"role": "user", "content": "hello"}]},
+            "config": {"configurable": {"thread_id": "cli:default"}},
+            "context": {
+                "session_key": "cli:default",
+                "channel": "cli",
+                "chat_id": "default",
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio
-async def test_process_direct_stream_emits_deltas_and_triggers_hooks(tmp_path):
-    hook = RecordingHook()
-    provider = RecordingProvider(stream_response=LLMResponse(content="part-1part-2"))
-    loop = AgentLoop(
-        provider=provider,
-        workspace=tmp_path,
-        session_manager=SessionManager(tmp_path),
-        tool_registry=ToolRegistry(),
-        context_builder=ContextBuilder(tmp_path),
-        hooks=[hook],
-    )
+async def test_process_direct_stream_emits_final_content_once():
+    graph = RecordingGraph()
+    loop = AgentLoop(graph=graph, context_factory=context_factory)
     deltas: list[str] = []
 
     response = await loop.process_direct_stream(
@@ -95,9 +74,6 @@ async def test_process_direct_stream_emits_deltas_and_triggers_hooks(tmp_path):
         chat_id="stream",
     )
 
-    assert response.content == "part-1part-2"
-    assert deltas == ["part-1", "part-2"]
-    assert [event[0] for event in hook.events] == ["before", "after"]
-    session_file = tmp_path / "sessions" / "cli_stream.jsonl"
-    assert '"content": "part-1part-2"' in session_file.read_text(encoding="utf-8")
-
+    assert response.content == "done"
+    assert deltas == ["done"]
+    assert graph.calls[0]["config"] == {"configurable": {"thread_id": "cli:stream"}}
