@@ -31,3 +31,8 @@ Thumbs.db
 
 /HKUDS-ipilot-DeepWiki-zh/
 /Rebuild-Tutorial/
+
+# Archived tutorial docs kept locally but removed from the repo index.
+/docs/langchain_langgraph_tutorial/
+/docs/lightrag_mcp_tutorial/
+/docs/iPilot_LightRAG_MCP_手敲施工教程.md
