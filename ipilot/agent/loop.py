@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from ipilot.agent.types import AgentRunResult
 
 
@@ -21,12 +23,14 @@ class AgentLoop:
             config={"configurable": {"thread_id": session_key}},
             context=context,
         )
-        messages = result["messages"]
-        last = messages[-1]
+        messages = list(result.get("messages", []))
+        interrupts = list(result.get("__interrupt__", []))
+        last = messages[-1] if messages else None
         return AgentRunResult(
-            content=getattr(last, "content", None),
+            content=_message_content(last),
             messages=messages,
-            finish_reason="stop",
+            finish_reason="interrupt" if interrupts else "stop",
+            interrupts=interrupts,
         )
 
     async def process_direct_stream(
@@ -45,8 +49,20 @@ class AgentLoop:
         )
 
         if on_stream is not None and result.content:
+            if result.finish_reason == "interrupt":
+                return result
             maybe_result = on_stream(result.content)
             if hasattr(maybe_result, "__await__"):
                 await maybe_result
 
         return result
+
+
+def _message_content(message: Any) -> str | None:
+    if message is None:
+        return None
+    if isinstance(message, dict):
+        content = message.get("content")
+    else:
+        content = getattr(message, "content", None)
+    return content if isinstance(content, str) or content is None else str(content)
