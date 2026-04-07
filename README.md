@@ -191,3 +191,7 @@ uv run pytest -q
 - Twitch 消息映射
 - CLI / API 基本入口
 - Twitch 环境变量覆盖
+
+## 许可证
+
+本项目采用 GNU Affero General Public License v3.0 或更高版本（`AGPL-3.0-or-later`）。完整文本见 [`LICENSE`](LICENSE)。

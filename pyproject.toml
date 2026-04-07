@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "ipilot-ai"
 version = "0.1.0"
 requires-python = ">=3.11"
+license = {text = "AGPL-3.0-or-later"}
 dependencies = [
     "croniter>=6.2.2",
     "fastapi>=0.135.3",
