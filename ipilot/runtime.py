@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from ipilot.agent.models import build_chat_model
 from ipilot.agent.graph_runtime import build_agent_graph
-from ipilot.agent.langchain_tools import build_langchain_tools
+from ipilot.agent.toolset import build_agent_tools
 from ipilot.agent.loop import AgentLoop
 from ipilot.agent.middleware import build_system_prompt, build_system_prompt_middleware
 from ipilot.agent.runtime_context import AgentRuntimeContext
@@ -23,9 +24,8 @@ def build_runtime_context_factory(config: Config):
 
 
 def build_agent_loop(config: Config) -> AgentLoop:
-    from ipilot.agent.models import build_chat_model
     model = build_chat_model(config)
-    tools = build_langchain_tools(config.workspace_path)
+    tools = build_agent_tools(config)
 
     graph = build_agent_graph(
         model=model,
@@ -40,10 +40,9 @@ def build_agent_loop(config: Config) -> AgentLoop:
 def build_experiment_agent(config: Config):
     from langchain.agents import create_agent
     from langgraph.checkpoint.memory import InMemorySaver
-    from ipilot.agent.models import build_chat_model
 
     model = build_chat_model(config)
-    tools = build_langchain_tools(config.workspace_path)
+    tools = build_agent_tools(config)
     checkpointer = InMemorySaver()
     middleware = [build_system_prompt_middleware] if build_system_prompt_middleware is not None else []
 

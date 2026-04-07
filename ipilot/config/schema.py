@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from pydantic import BaseModel, Field
 
 class AgentDefaults(BaseModel):
@@ -21,6 +22,18 @@ class ToolsConfig(BaseModel):
     restrict_to_workspace: bool = False
 
 
+class McpServerConfig(BaseModel):
+    name: str
+    url: str
+    enabled: bool = True
+    transport: str = "streamable-http"
+    timeout_seconds: float = 30.0
+
+
+class McpConfig(BaseModel):
+    servers: list[McpServerConfig] = Field(default_factory=list)
+
+
 class TwitchChannelConfig(BaseModel):
     enabled: bool = False
     client_id: str = ""
@@ -39,9 +52,9 @@ class Config(BaseModel):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
 
     @property
     def workspace_path(self) -> Path:
         return Path(self.agents.defaults.workspace).expanduser()
-

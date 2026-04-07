@@ -1,0 +1,1 @@
+"""LightRAG MCP server package."""
