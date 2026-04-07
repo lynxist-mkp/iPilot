@@ -34,8 +34,8 @@
 
 ## 每轮回归检查
 
-- [ ] `pytest -q`
-- [ ] `python -m ipilot --help`
-- [ ] `python -m ipilot status`
-- [ ] `uvicorn ipilot.api.server:app --port 8900`
+- [ ] `uv run pytest -q`
+- [ ] `uv run ipilot --help`
+- [ ] `uv run ipilot status`
+- [ ] `uv run uvicorn ipilot.api.server:app --port 8900`
 
